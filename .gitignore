@@ -1,0 +1,19 @@
+# .gitignore
+
+# Pythonのキャッシュ
+__pycache__/
+*.py[cod]
+
+# 仮想環境
+venv/
+.venv/
+env/
+.env/
+
+# 今回出力した画像やプロジェクトファイルなど（必要に応じて）
+*.ltpj
+*.png
+*.xml
+
+# Macの不要ファイル（他の人がMacで開いた時用）
+.DS_Store
