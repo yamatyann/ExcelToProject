@@ -2,7 +2,7 @@ import time
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget, 
     QTableWidgetItem, QComboBox, QHeaderView, QAbstractItemView, QGraphicsView,
-    QColorDialog, QApplication, QGraphicsRectItem, QWidget
+    QColorDialog, QApplication, QGraphicsRectItem, QWidget, QGraphicsLineItem
 )
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen
@@ -186,16 +186,43 @@ class ColorMapEditorDialog(QDialog):
 # ---------------------------------------------------------
 SNAP_THRESHOLD = 12  # シーン座標(px)。Altキーを押しながらドラッグするとスナップ無効
 
+def _get_guides(scene):
+    """ スナップ位置を示すガイド線 (縦, 横) を取得。無ければ作成 """
+    guides = getattr(scene, "_snap_guides", None)
+    if guides is None:
+        pen = QPen(QColor(0, 255, 255))
+        pen.setWidth(2)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        guides = []
+        for _ in range(2):
+            line = QGraphicsLineItem()
+            line.setPen(pen)
+            line.setZValue(1000)
+            line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            line.hide()
+            scene.addItem(line)
+            guides.append(line)
+        scene._snap_guides = guides
+    return guides
+
+def hide_snap_guides(scene):
+    if scene is None:
+        return
+    for line in getattr(scene, "_snap_guides", None) or []:
+        line.hide()
+
 def snap_anchor(moving, anchor):
-    """ 移動中アイテムの基準点(anchor)を、キャンバス中央や他アイテムの中心に吸着させた座標を返す """
+    """ 移動中アイテムの基準点(anchor)を、キャンバス中央や他アイテムの中心に吸着させた座標を返す。
+        吸着した位置にはガイド線を表示する """
     scene = moving.scene()
     if scene is None or not moving.isSelected():
         return anchor
     if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
         return anchor
-    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
-        return anchor
-    if len(scene.selectedItems()) != 1:
+    guides = _get_guides(scene)
+    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier or len(scene.selectedItems()) != 1:
+        hide_snap_guides(scene)
         return anchor
 
     xs, ys = [960.0], [540.0]
@@ -211,8 +238,13 @@ def snap_anchor(moving, anchor):
     x, y = anchor.x(), anchor.y()
     best_x = min(xs, key=lambda t: abs(t - x))
     best_y = min(ys, key=lambda t: abs(t - y))
-    if abs(best_x - x) <= SNAP_THRESHOLD: x = best_x
-    if abs(best_y - y) <= SNAP_THRESHOLD: y = best_y
+    snapped_x = abs(best_x - x) <= SNAP_THRESHOLD
+    snapped_y = abs(best_y - y) <= SNAP_THRESHOLD
+    if snapped_x: x = best_x
+    if snapped_y: y = best_y
+
+    guides[0].setLine(x, 0, x, 1080); guides[0].setVisible(snapped_x)
+    guides[1].setLine(0, y, 1920, y); guides[1].setVisible(snapped_y)
     return QPointF(x, y)
 
 
@@ -229,6 +261,10 @@ class SnapTextItem(QGraphicsTextItem):
             center = self.boundingRect().center()
             value = snap_anchor(self, value + center) - center
         return super().itemChange(change, value)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        hide_snap_guides(self.scene())
 
 class CountTextItem(SnapTextItem):
     def __init__(self, main_app, target_item):
@@ -295,6 +331,10 @@ class MappedTextItem(QGraphicsItemGroup):
             self.selection_rect.setVisible(bool(value))
             
         return super().itemChange(change, value)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        hide_snap_guides(self.scene())
 
     def update_content(self, mode, color_map, text1="", text2="", count_mode="none"):
         self.selection_rect.hide()

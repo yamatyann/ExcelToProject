@@ -71,6 +71,7 @@ class ExcelToProjectApp(QMainWindow):
         self.end_row = None
         self.current_step = -1
         self.selected_item = None
+        self.multi_selected = []
         self.color_map = load_color_map()
         self.canvas_bg = None 
         self.is_exporting = False 
@@ -569,6 +570,7 @@ class ExcelToProjectApp(QMainWindow):
 
     def draw_default_background(self):
         self.scene.clear()
+        self.scene._snap_guides = None
         self.canvas_bg = self.scene.addRect(0, 0, 1920, 1080, QPen(Qt.PenStyle.NoPen), QBrush(QColor("black")))
         self.canvas_bg.setZValue(-1)
         self.global_count_item = SnapTextItem("カウント")
@@ -619,13 +621,29 @@ class ExcelToProjectApp(QMainWindow):
             self.btn_del_text.setEnabled(True)
         else:
             self.selected_item = None
-            self.prop_group.setEnabled(False)
             self.init_group.setEnabled(False)
             self.btn_del_text.setEnabled(False)
+            if len(real_selected) >= 2:
+                # 複数選択時は文字サイズのみ一括変更できる
+                self.multi_selected = real_selected
+                self.prop_group.setEnabled(True)
+                self.combo_type.setEnabled(False)
+                self.line_static.setEnabled(False)
+                self.btn_set_ref.setEnabled(False)
+                self.spin_font_size.setEnabled(True)
+                self.spin_font_size.blockSignals(True)
+                self.spin_font_size.setValue(real_selected[0].font_size)
+                self.spin_font_size.blockSignals(False)
+            else:
+                self.multi_selected = []
+                self.prop_group.setEnabled(False)
 
     def sync_inspector_from_item(self):
         item = self.selected_item
         if not item: return
+        self.multi_selected = []
+        self.combo_type.setEnabled(True)
+        self.spin_font_size.setEnabled(True)
         self.combo_type.blockSignals(True)
         self.line_static.blockSignals(True)
         self.spin_font_size.blockSignals(True)
@@ -666,7 +684,12 @@ class ExcelToProjectApp(QMainWindow):
 
     def apply_properties_to_item(self):
         item = self.selected_item
-        if not item: return
+        if not item:
+            if self.multi_selected:
+                for it in self.multi_selected:
+                    it.font_size = self.spin_font_size.value()
+                self.update_preview()
+            return
         idx = self.combo_type.currentIndex()
         if idx == 0: item.item_type = "static"
         elif idx == 1: item.item_type = "stopwatch"
