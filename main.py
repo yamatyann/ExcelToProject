@@ -59,7 +59,7 @@ class UpdateChecker(QThread):
             # ネットが繋がっていない、またはAPI制限などの場合はエラーを出さずに静かに終了
             pass
 
-class LightingEditorApp(QMainWindow):
+class ExcelToProjectApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"照明オペレーション エディタ (XML連携版) v{APP_VERSION}")
@@ -100,7 +100,7 @@ class LightingEditorApp(QMainWindow):
         # ----------------------------------------------------
         # 初回起動時のチュートリアル表示
         # ----------------------------------------------------
-        self.settings = QSettings("LightingEditorOrg", "LightingEditorApp")
+        self.settings = QSettings("ExcelToProjectOrg", "ExcelToProjectApp")
         if not self.settings.value("tutorial_shown", type=bool):
             self.start_tutorial()
             self.settings.setValue("tutorial_shown", True)
@@ -1175,6 +1175,6 @@ if __name__ == "__main__":
         sys.exit(1)
     sys.excepthook = global_exception_handler
     app = QApplication(sys.argv)
-    window = LightingEditorApp()
+    window = ExcelToProjectApp()
     window.show()
     sys.exit(app.exec())

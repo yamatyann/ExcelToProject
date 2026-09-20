@@ -17,3 +17,9 @@ env/
 
 # Macの不要ファイル（他の人がMacで開いた時用）
 .DS_Store
+# PyInstaller / 配布物
+build/
+dist/
+ExcelToProject/
+*.7z
+*.exe
