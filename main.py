@@ -11,14 +11,15 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QFileDialog, 
     QMessageBox, QGroupBox, QRadioButton, QLineEdit, QComboBox, QFormLayout, 
-    QSpinBox, QMenuBar, QMenu, QGraphicsScene, QGraphicsTextItem, QGraphicsItem
+    QSpinBox, QMenuBar, QMenu, QGraphicsScene, QGraphicsTextItem, QGraphicsItem,
+    QAbstractItemView, QAbstractSpinBox, QTextEdit
 )
-from PyQt6.QtCore import Qt, QRectF, QSettings, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, QSettings, QThread, pyqtSignal, QEvent
 from PyQt6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QAction, QImage
 
 # 他のファイルからインポート
 from utils import load_color_map, save_color_map, encode_path_for_premiere, escape_xml
-from custom_ui import BpmTapperDialog, ColorMapEditorDialog, MappedTextItem, PreviewView, TutorialOverlay
+from custom_ui import BpmTapperDialog, ColorMapEditorDialog, MappedTextItem, SnapTextItem, PreviewView, TutorialOverlay
 
 # =========================================================
 # アプリの設定
@@ -96,6 +97,7 @@ class ExcelToProjectApp(QMainWindow):
 
         self.setup_ui()
         self.setup_default_scene()
+        QApplication.instance().installEventFilter(self)
 
         # ----------------------------------------------------
         # 初回起動時のチュートリアル表示
@@ -111,6 +113,16 @@ class ExcelToProjectApp(QMainWindow):
         self.update_checker = UpdateChecker()
         self.update_checker.update_available.connect(self.show_update_notification)
         self.update_checker.start()
+
+    def eventFilter(self, obj, event):
+        """ ←/→キーで前後の行へ移動 (文字入力や表の操作中は邪魔しない) """
+        if event.type() == QEvent.Type.KeyPress and self.isActiveWindow()                 and event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right)                 and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            focus = QApplication.focusWidget()
+            if not isinstance(focus, (QLineEdit, QAbstractSpinBox, QComboBox, QAbstractItemView, QTextEdit)):
+                if event.key() == Qt.Key.Key_Left: self.step_prev()
+                else: self.step_next()
+                return True
+        return super().eventFilter(obj, event)
 
     def show_update_notification(self, latest_version, url):
         """ アップデートが見つかった際に呼ばれる処理 """
@@ -361,11 +373,11 @@ class ExcelToProjectApp(QMainWindow):
         self.dock_timeline = QDockWidget("② タイムライン (プレビュー操作)", self)
         time_widget = QWidget()
         time_layout = QHBoxLayout(time_widget)
-        self.btn_prev = QPushButton("◀ 前の行へ")
+        self.btn_prev = QPushButton("◀ 前の行へ (←)")
         self.btn_prev.clicked.connect(self.step_prev)
         self.lbl_status = QLabel("待機中 (Excel読込後、開始行/終了行を設定してください)")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.btn_next = QPushButton("次の行へ ▶")
+        self.btn_next = QPushButton("次の行へ (→) ▶")
         self.btn_next.clicked.connect(self.step_next)
         time_layout.addWidget(self.btn_prev)
         time_layout.addWidget(self.lbl_status, stretch=1)
@@ -406,6 +418,9 @@ class ExcelToProjectApp(QMainWindow):
             "col_min": self.col_min,
             "col_sec": self.col_sec,
             "row_count_settings": self.row_count_settings,
+            "count_layout_mode": self.combo_count_pos.currentIndex(),
+            "shared_count_offset": list(self.shared_count_offset),
+            "global_count_pos": [self.global_count_item.pos().x(), self.global_count_item.pos().y()],
             "items": items_data
         }
 
@@ -449,6 +464,16 @@ class ExcelToProjectApp(QMainWindow):
 
             saved_rc = data.get("row_count_settings", {})
             self.row_count_settings = {int(k): v for k, v in saved_rc.items()}
+
+            self.combo_count_pos.blockSignals(True)
+            self.combo_count_pos.setCurrentIndex(data.get("count_layout_mode", 0))
+            self.combo_count_pos.blockSignals(False)
+            offset = data.get("shared_count_offset")
+            if offset:
+                self.shared_count_offset = (offset[0], offset[1])
+            gpos = data.get("global_count_pos")
+            if gpos:
+                self.global_count_item.setPos(gpos[0], gpos[1])
 
             items_to_remove = [item for item in self.scene.items() if isinstance(item, MappedTextItem)]
             for item in items_to_remove:
@@ -544,11 +569,9 @@ class ExcelToProjectApp(QMainWindow):
         self.scene.clear()
         self.canvas_bg = self.scene.addRect(0, 0, 1920, 1080, QPen(Qt.PenStyle.NoPen), QBrush(QColor("black")))
         self.canvas_bg.setZValue(-1)
-        self.global_count_item = QGraphicsTextItem("カウント")
+        self.global_count_item = SnapTextItem("カウント")
         self.global_count_item.setDefaultTextColor(QColor("yellow"))
         self.global_count_item.setFont(QFont("Meiryo", 50))
-        self.global_count_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
-        self.global_count_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.global_count_item.setPos(960 - self.global_count_item.boundingRect().width() / 2, 900)
         self.scene.addItem(self.global_count_item)
         self.global_count_item.hide()

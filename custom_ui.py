@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QComboBox, QHeaderView, QAbstractItemView, QGraphicsView,
     QColorDialog, QApplication, QGraphicsRectItem, QWidget
 )
-from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen
 from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsItemGroup, QGraphicsItem
 
@@ -180,14 +180,61 @@ class ColorMapEditorDialog(QDialog):
         self.color_map = new_map
         self.accept()
 
-class CountTextItem(QGraphicsTextItem):
+
+# ---------------------------------------------------------
+# ドラッグ時のスナップ処理
+# ---------------------------------------------------------
+SNAP_THRESHOLD = 12  # シーン座標(px)。Altキーを押しながらドラッグするとスナップ無効
+
+def snap_anchor(moving, anchor):
+    """ 移動中アイテムの基準点(anchor)を、キャンバス中央や他アイテムの中心に吸着させた座標を返す """
+    scene = moving.scene()
+    if scene is None or not moving.isSelected():
+        return anchor
+    if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+        return anchor
+    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+        return anchor
+    if len(scene.selectedItems()) != 1:
+        return anchor
+
+    xs, ys = [960.0], [540.0]
+    for it in scene.items():
+        if it is moving:
+            continue
+        if isinstance(it, MappedTextItem):
+            xs.append(it.pos().x()); ys.append(it.pos().y())
+        elif isinstance(it, SnapTextItem) and it.isVisible():
+            c = it.pos() + it.boundingRect().center()
+            xs.append(c.x()); ys.append(c.y())
+
+    x, y = anchor.x(), anchor.y()
+    best_x = min(xs, key=lambda t: abs(t - x))
+    best_y = min(ys, key=lambda t: abs(t - y))
+    if abs(best_x - x) <= SNAP_THRESHOLD: x = best_x
+    if abs(best_y - y) <= SNAP_THRESHOLD: y = best_y
+    return QPointF(x, y)
+
+
+class SnapTextItem(QGraphicsTextItem):
+    """ ドラッグ時にスナップするテキストアイテム (共通カウント表示用) """
+    def __init__(self, text=""):
+        super().__init__(text)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
+            center = self.boundingRect().center()
+            value = snap_anchor(self, value + center) - center
+        return super().itemChange(change, value)
+
+class CountTextItem(SnapTextItem):
     def __init__(self, main_app, target_item):
         super().__init__()
         self.main_app = main_app
         self.target_item = target_item
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setDefaultTextColor(QColor("yellow"))
         self.setFont(QFont("Meiryo", int(60 * 0.7)))
         self.setZValue(10)
@@ -196,12 +243,15 @@ class CountTextItem(QGraphicsTextItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
-            if self.isSelected(): 
-                new_pos = value
+            if self.isSelected():
+                center = self.boundingRect().center()
+                new_pos = snap_anchor(self, value + center) - center
+                value = new_pos
                 offset_x = new_pos.x() - self.target_item.pos().x()
                 offset_y = new_pos.y() - self.target_item.pos().y()
                 self.main_app.shared_count_offset = (offset_x, offset_y)
                 self.main_app.sync_all_counts(exclude_item=self)
+                return value
         return super().itemChange(change, value)
 
 class MappedTextItem(QGraphicsItemGroup):
@@ -237,6 +287,7 @@ class MappedTextItem(QGraphicsItemGroup):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
+            value = snap_anchor(self, value)
             if self.count_item and self.count_item.isVisible():
                 offset_x, offset_y = self.main_app.shared_count_offset
                 self.count_item.setPos(value.x() + offset_x, value.y() + offset_y)
