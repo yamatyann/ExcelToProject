@@ -24,7 +24,7 @@ from custom_ui import BpmTapperDialog, ColorMapEditorDialog, MappedTextItem, Sna
 # =========================================================
 # アプリの設定
 # =========================================================
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 GITHUB_REPO = "yamatyann/ExcelToProject" 
 # =========================================================
 
