@@ -179,7 +179,7 @@ class ExcelToProjectApp(QMainWindow):
         self.setCentralWidget(self.view)
         self.draw_default_background()
 
-        self.dock_excel = QDockWidget("① Excelデータ & 範囲設定", self)
+        self.dock_excel = QDockWidget("① Excel読込・範囲/列設定", self)
         excel_widget = QWidget()
         excel_layout = QVBoxLayout(excel_widget)
         self.btn_load = QPushButton("Excelファイルを読み込む")
@@ -205,34 +205,6 @@ class ExcelToProjectApp(QMainWindow):
         layout_range.addLayout(box_end)
         group_range.setLayout(layout_range)
         excel_layout.addWidget(group_range)
-        self.dock_excel.setWidget(excel_widget)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dock_excel)
-
-        self.dock_export = QDockWidget("⑥ 編集ソフト連携 (XML出力)", self)
-        export_widget = QWidget()
-        export_layout = QVBoxLayout(export_widget)
-        
-        box_audio = QHBoxLayout()
-        self.btn_audio = QPushButton("音声(mp3/wav)を選択")
-        self.btn_audio.clicked.connect(self.select_audio)
-        self.lbl_audio = QLabel("未選択")
-        box_audio.addWidget(self.btn_audio)
-        box_audio.addWidget(self.lbl_audio)
-        export_layout.addLayout(box_audio)
-        
-        group_video = QGroupBox("背景動画 (自動認識)")
-        v_layout = QVBoxLayout()
-        self.lbl_video = QLabel()
-        if self.video_path:
-            self.lbl_video.setText("✅ count.mp4 を認識しました")
-            self.lbl_video.setStyleSheet("color: #10b981; font-weight: bold;")
-        else:
-            self.lbl_video.setText("❌ count.mp4 が同じフォルダにありません")
-            self.lbl_video.setStyleSheet("color: #ef4444; font-weight: bold;")
-        v_layout.addWidget(self.lbl_video)
-        group_video.setLayout(v_layout)
-        export_layout.addWidget(group_video)
-
         group_map = QGroupBox("タイムコード読み取り列の設定")
         map_layout = QVBoxLayout()
         box_min = QHBoxLayout()
@@ -257,7 +229,35 @@ class ExcelToProjectApp(QMainWindow):
         box_sec.addWidget(self.btn_clear_sec)
         map_layout.addLayout(box_sec)
         group_map.setLayout(map_layout)
-        export_layout.addWidget(group_map)
+        excel_layout.addWidget(group_map)
+        self.dock_excel.setWidget(excel_widget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dock_excel)
+
+        self.dock_export = QDockWidget("⑤ 編集ソフト連携 (XML出力)", self)
+        export_widget = QWidget()
+        export_layout = QVBoxLayout(export_widget)
+        
+        box_audio = QHBoxLayout()
+        self.btn_audio = QPushButton("音声(mp3/wav)を選択")
+        self.btn_audio.clicked.connect(self.select_audio)
+        self.lbl_audio = QLabel("未選択")
+        box_audio.addWidget(self.btn_audio)
+        box_audio.addWidget(self.lbl_audio)
+        export_layout.addLayout(box_audio)
+        
+        group_video = QGroupBox("背景動画 (自動認識)")
+        v_layout = QVBoxLayout()
+        self.lbl_video = QLabel()
+        if self.video_path:
+            self.lbl_video.setText("✅ count.mp4 を認識しました")
+            self.lbl_video.setStyleSheet("color: #10b981; font-weight: bold;")
+        else:
+            self.lbl_video.setText("❌ count.mp4 が同じフォルダにありません")
+            self.lbl_video.setStyleSheet("color: #ef4444; font-weight: bold;")
+        v_layout.addWidget(self.lbl_video)
+        group_video.setLayout(v_layout)
+        export_layout.addWidget(group_video)
+
 
         self.btn_export = QPushButton("▶ プロジェクト(XML)を書き出し")
         self.btn_export.setStyleSheet("background-color: #10b981; color: white; font-weight: bold; padding: 15px;")
@@ -266,9 +266,8 @@ class ExcelToProjectApp(QMainWindow):
         
         export_layout.addStretch()
         self.dock_export.setWidget(export_widget)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_export)
 
-        self.dock_count = QDockWidget("⑤ カウント＆BPM設定", self)
+        self.dock_count = QDockWidget("④ カウント＆BPM設定", self)
         count_widget = QWidget()
         count_layout = QVBoxLayout(count_widget)
         group_pos = QGroupBox("表示レイアウト")
@@ -300,9 +299,8 @@ class ExcelToProjectApp(QMainWindow):
         count_layout.addWidget(self.group_row_settings)
         count_layout.addStretch()
         self.dock_count.setWidget(count_widget)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_count)
 
-        self.dock_inspector = QDockWidget("③ プロパティ・マッピング", self)
+        self.dock_inspector = QDockWidget("② テキスト配置・プロパティ", self)
         inspector_widget = QWidget()
         self.inspector_layout = QVBoxLayout(inspector_widget)
         box_text_ops = QHBoxLayout()
@@ -368,9 +366,8 @@ class ExcelToProjectApp(QMainWindow):
 
         self.inspector_layout.addStretch()
         self.dock_inspector.setWidget(inspector_widget)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_inspector)
 
-        self.dock_timeline = QDockWidget("② タイムライン (プレビュー操作)", self)
+        self.dock_timeline = QDockWidget("③ タイムライン (プレビュー操作)", self)
         time_widget = QWidget()
         time_layout = QHBoxLayout(time_widget)
         self.btn_prev = QPushButton("◀ 前の行へ (←)")
@@ -384,6 +381,11 @@ class ExcelToProjectApp(QMainWindow):
         time_layout.addWidget(self.btn_next)
         self.dock_timeline.setWidget(time_widget)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.dock_timeline)
+
+        # 右側は操作順 (② → ④ → ⑤) に上から並べる
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_inspector)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_count)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_export)
 
         self.prop_group.setEnabled(False)
         self.init_group.setEnabled(False)
