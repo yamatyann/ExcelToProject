@@ -36,7 +36,7 @@ class UpdateChecker(QThread):
     update_available = pyqtSignal(str, str)
 
     def run(self):
-        if GITHUB_REPO == "yamatyann/ExcelToProject":
+        if not GITHUB_REPO or GITHUB_REPO.startswith("your"):
             return # リポジトリ名が設定されていない場合はスキップ
 
         try:
