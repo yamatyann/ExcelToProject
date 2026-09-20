@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import re
 import colorsys
@@ -20,7 +21,13 @@ def escape_xml(text):
 # ---------------------------------------------------------
 # カラーマップ関連
 # ---------------------------------------------------------
-COLOR_MAP_FILE = "color_map.json"
+def _app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+# 起動時のカレントフォルダに関係なく、exe(またはスクリプト)と同じ場所に置く
+COLOR_MAP_FILE = os.path.join(_app_dir(), "color_map.json")
 DEFAULT_COLOR_MAP = {
     "赤": {"type": "color", "value": [255, 0, 0]}, "橙": {"type": "color", "value": [255, 128, 0]},
     "オレンジ": {"type": "color", "value": [255, 128, 0]}, "黄": {"type": "color", "value": [255, 255, 0]},

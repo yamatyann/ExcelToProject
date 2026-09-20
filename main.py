@@ -1,4 +1,10 @@
 import sys
+if len(sys.argv) > 1 and sys.argv[1] == "--apply-update":
+    # 自動アップデートの更新用プロセスとして起動された場合は、アプリ本体を開かずに差し替え処理だけ行う
+    from updater import run_apply
+    run_apply(sys.argv[2:])
+    sys.exit(0)
+
 import os
 import json
 import pandas as pd
@@ -12,19 +18,21 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QFileDialog, 
     QMessageBox, QGroupBox, QRadioButton, QLineEdit, QComboBox, QFormLayout, 
     QSpinBox, QMenuBar, QMenu, QGraphicsScene, QGraphicsTextItem, QGraphicsItem,
+    QCheckBox, QProgressDialog,
     QAbstractItemView, QAbstractSpinBox, QTextEdit
 )
 from PyQt6.QtCore import Qt, QRectF, QSettings, QThread, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QAction, QImage, QKeySequence
 
 # 他のファイルからインポート
+import updater
 from utils import load_color_map, save_color_map, encode_path_for_premiere, escape_xml
 from custom_ui import BpmTapperDialog, ColorMapEditorDialog, MappedTextItem, SnapTextItem, PreviewView, TutorialOverlay
 
 # =========================================================
 # アプリの設定
 # =========================================================
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 UNDO_LIMIT = 100
 GITHUB_REPO = "yamatyann/ExcelToProject" 
 # =========================================================
@@ -34,7 +42,7 @@ GITHUB_REPO = "yamatyann/ExcelToProject"
 # ---------------------------------------------------------
 class UpdateChecker(QThread):
     # 最新バージョンと、ダウンロードページのURLを送るシグナル
-    update_available = pyqtSignal(str, str)
+    update_available = pyqtSignal(str, str, str, str)
 
     def run(self):
         if not GITHUB_REPO or GITHUB_REPO.startswith("your"):
@@ -56,10 +64,36 @@ class UpdateChecker(QThread):
                     return [int(x) for x in v_str.split(".") if x.isdigit()]
 
                 if parse_v(latest_version) > parse_v(current_version):
-                    self.update_available.emit(latest_version, release_url)
+                    download_url, digest = updater.pick_asset(data)
+                    self.update_available.emit(latest_version, release_url, download_url or "", digest or "")
         except Exception:
             # ネットが繋がっていない、またはAPI制限などの場合はエラーを出さずに静かに終了
             pass
+
+class UpdateDownloader(QThread):
+    """ 最新版をダウンロード・検証・展開するスレッド """
+    progress = pyqtSignal(int, int)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, url, sha256, work_dir):
+        super().__init__()
+        self.url, self.sha256, self.work_dir = url, sha256, work_dir
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            new_exe = updater.download_and_extract(
+                self.url, self.sha256, self.work_dir,
+                progress_cb=lambda d, t: self.progress.emit(d, t),
+                is_cancelled=lambda: self._cancelled)
+            self.finished_ok.emit(new_exe)
+        except Exception as e:
+            self.failed.emit(str(e))
+
 
 class ExcelToProjectApp(QMainWindow):
     def __init__(self):
@@ -135,18 +169,99 @@ class ExcelToProjectApp(QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
-    def show_update_notification(self, latest_version, url):
+    def show_update_notification(self, latest_version, url, download_url="", digest=""):
         """ アップデートが見つかった際に呼ばれる処理 """
+        can_auto = updater.can_self_update() and download_url and digest
+        text = (f"新しいバージョン (v{latest_version}) が公開されています。\n\n"
+                f"現在のバージョン: v{APP_VERSION}\n\n")
+        if can_auto:
+            text += "今すぐアップデートしますか？\n(ダウンロード後、自動で入れ替えて再起動します)"
+        else:
+            text += "ダウンロードページを開きますか？"
         reply = QMessageBox.information(
-            self,
-            "アップデートのお知らせ",
-            f"新しいバージョン (v{latest_version}) が公開されています。\n\n"
-            f"現在のバージョン: v{APP_VERSION}\n\n"
-            f"ダウンロードページを開きますか？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+            self, "アップデートのお知らせ", text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if not can_auto:
             webbrowser.open(url)
+            return
+        keep_bak = self.ask_keep_old_exe()
+        if keep_bak is None:
+            return
+        self.start_auto_update(download_url, digest, keep_bak, url)
+
+    def ask_keep_old_exe(self):
+        """ 旧exeを .bak として残すか確認する。True=残す / False=削除 / None=中止。選択は保存できる """
+        saved = self.settings.value("update_old_exe_action", "")
+        if saved in ("keep", "delete"):
+            return saved == "keep"
+        box = QMessageBox(self)
+        box.setWindowTitle("旧バージョンの扱い")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("アップデート後、これまでのexeファイルはどうしますか？")
+        box.setInformativeText("「残す」を選ぶと ExcelToProject.exe.bak として保存します。")
+        btn_keep = box.addButton("残す (.bak)", QMessageBox.ButtonRole.AcceptRole)
+        btn_delete = box.addButton("削除する", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        chk = QCheckBox("この選択を保存する (次回から確認しない)")
+        box.setCheckBox(chk)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (btn_keep, btn_delete):
+            return None
+        keep = clicked == btn_keep
+        if chk.isChecked():
+            self.settings.setValue("update_old_exe_action", "keep" if keep else "delete")
+        return keep
+
+    def start_auto_update(self, download_url, digest, keep_bak, release_url):
+        import tempfile
+        self.update_work_dir = tempfile.mkdtemp(prefix="ExcelToProject_update_")
+        dlg = QProgressDialog("アップデートをダウンロードしています...", "キャンセル", 0, 100, self)
+        dlg.setWindowTitle("アップデート")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        self.update_dialog = dlg
+        self.update_downloader = UpdateDownloader(download_url, digest, self.update_work_dir)
+
+        def on_progress(done, total):
+            if total > 0:
+                dlg.setValue(int(done * 100 / total))
+                dlg.setLabelText(f"ダウンロード中... {done / 1048576:.1f} / {total / 1048576:.1f} MB")
+
+        def on_failed(msg):
+            dlg.close()
+            shutil.rmtree(self.update_work_dir, ignore_errors=True)
+            if "キャンセル" in msg:
+                return
+            reply = QMessageBox.warning(
+                self, "アップデート失敗", f"{msg}\n\nダウンロードページを開きますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                webbrowser.open(release_url)
+
+        def on_done(new_exe):
+            dlg.close()
+            need_admin = not updater.is_dir_writable(updater.app_dir())
+            try:
+                started = updater.start_apply(new_exe, self.update_work_dir, keep_bak, need_admin)
+            except Exception as e:
+                QMessageBox.critical(self, "アップデート失敗", f"更新の準備に失敗しました。\n{e}")
+                return
+            if started:
+                QApplication.quit()
+            else:
+                QMessageBox.warning(self, "アップデート中止", "管理者権限が許可されなかったため、アップデートを中止しました。")
+                shutil.rmtree(self.update_work_dir, ignore_errors=True)
+
+        dlg.canceled.connect(self.update_downloader.cancel)
+        self.update_downloader.progress.connect(on_progress)
+        self.update_downloader.failed.connect(on_failed)
+        self.update_downloader.finished_ok.connect(on_done)
+        self.update_downloader.start()
 
     def setup_ui(self):
         menubar = self.menuBar()
