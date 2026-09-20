@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
     QSpinBox, QMenuBar, QMenu, QGraphicsScene, QGraphicsTextItem, QGraphicsItem,
     QAbstractItemView, QAbstractSpinBox, QTextEdit
 )
-from PyQt6.QtCore import Qt, QRectF, QSettings, QThread, pyqtSignal, QEvent
-from PyQt6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QAction, QImage
+from PyQt6.QtCore import Qt, QRectF, QSettings, QThread, pyqtSignal, QEvent, QTimer
+from PyQt6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QAction, QImage, QKeySequence
 
 # 他のファイルからインポート
 from utils import load_color_map, save_color_map, encode_path_for_premiere, escape_xml
@@ -24,7 +24,8 @@ from custom_ui import BpmTapperDialog, ColorMapEditorDialog, MappedTextItem, Sna
 # =========================================================
 # アプリの設定
 # =========================================================
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.1.0"
+UNDO_LIMIT = 100
 GITHUB_REPO = "yamatyann/ExcelToProject" 
 # =========================================================
 
@@ -72,6 +73,14 @@ class ExcelToProjectApp(QMainWindow):
         self.current_step = -1
         self.selected_item = None
         self.multi_selected = []
+        self.project_path = ""
+        self.undo_stack = []
+        self.redo_stack = []
+        self.restoring = False
+        self.undo_timer = QTimer(self)
+        self.undo_timer.setSingleShot(True)
+        self.undo_timer.setInterval(400)
+        self.undo_timer.timeout.connect(self.record_state)
         self.color_map = load_color_map()
         self.canvas_bg = None 
         self.is_exporting = False 
@@ -98,6 +107,7 @@ class ExcelToProjectApp(QMainWindow):
 
         self.setup_ui()
         self.setup_default_scene()
+        self.reset_undo_history()
         QApplication.instance().installEventFilter(self)
 
         # ----------------------------------------------------
@@ -143,12 +153,28 @@ class ExcelToProjectApp(QMainWindow):
         
         menu_file = menubar.addMenu("ファイル(&F)")
         action_open = QAction("プロジェクトを開く...", self)
+        action_open.setShortcut(QKeySequence.StandardKey.Open)
         action_open.triggered.connect(self.load_project)
         menu_file.addAction(action_open)
         
-        action_save = QAction("プロジェクトを保存...", self)
+        action_save = QAction("上書き保存", self)
+        action_save.setShortcut(QKeySequence.StandardKey.Save)
         action_save.triggered.connect(self.save_project)
         menu_file.addAction(action_save)
+        action_save_as = QAction("名前を付けて保存...", self)
+        action_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        action_save_as.triggered.connect(self.save_project_as)
+        menu_file.addAction(action_save_as)
+
+        menu_edit = menubar.addMenu("編集(&E)")
+        action_undo = QAction("元に戻す", self)
+        action_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        action_undo.triggered.connect(self.undo)
+        menu_edit.addAction(action_undo)
+        action_redo = QAction("やり直し", self)
+        action_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        action_redo.triggered.connect(self.redo)
+        menu_edit.addAction(action_redo)
 
         menu_settings = menubar.addMenu("設定(&S)")
         action_edit_color = QAction("カラーマップを編集...", self)
@@ -176,6 +202,7 @@ class ExcelToProjectApp(QMainWindow):
         self.scene = QGraphicsScene()
         self.scene.setSceneRect(0, 0, 1920, 1080) 
         self.scene.selectionChanged.connect(self.on_selection_changed)
+        self.scene._record_state = self.record_state
         self.view = PreviewView(self.scene)
         self.setCentralWidget(self.view)
         self.draw_default_background()
@@ -276,6 +303,7 @@ class ExcelToProjectApp(QMainWindow):
         self.combo_count_pos = QComboBox()
         self.combo_count_pos.addItems(["1箇所にまとめて表示 (自由に移動)", "各指示に紐づけて表示 (連動して移動)"])
         self.combo_count_pos.currentIndexChanged.connect(self.update_preview)
+        self.combo_count_pos.currentIndexChanged.connect(self.record_state)
         pos_form.addRow("カウント位置:", self.combo_count_pos)
         group_pos.setLayout(pos_form)
         count_layout.addWidget(group_pos)
@@ -393,12 +421,13 @@ class ExcelToProjectApp(QMainWindow):
         self.btn_del_text.setEnabled(False)
         self.group_row_settings.setEnabled(False)
 
-    def save_project(self):
-        path, _ = QFileDialog.getSaveFileName(self, "プロジェクトを保存", "", "Lighting Project (*.ltpj)")
-        if not path: return
-        
+    # ==========================================
+    # プロジェクトの保存 / 読込 / Undo・Redo
+    # ==========================================
+    def collect_project_data(self):
+        """ 現在の編集状態を、保存・Undo用の辞書にまとめる """
         items_data = []
-        for item in self.scene.items():
+        for item in reversed(self.scene.items()):  # 追加順
             if isinstance(item, MappedTextItem):
                 items_data.append({
                     "x": item.pos().x(),
@@ -413,7 +442,7 @@ class ExcelToProjectApp(QMainWindow):
                     "font_size": item.font_size
                 })
 
-        data = {
+        return {
             "excel_path": self.excel_path,
             "audio_path": self.audio_path,
             "start_row": self.start_row,
@@ -427,10 +456,89 @@ class ExcelToProjectApp(QMainWindow):
             "items": items_data
         }
 
+    def apply_project_data(self, data, reload_excel=True):
+        """ 辞書の内容を画面に反映する (読込・Undo/Redo共通) """
+        if reload_excel:
+            excel_path = data.get("excel_path", "")
+            if excel_path and os.path.exists(excel_path):
+                self._load_excel_from_path(excel_path)
+            else:
+                QMessageBox.warning(self, "警告", "保存されていたExcelファイルが見つかりません。必要であれば再度読み込んでください。")
+
+        self.audio_path = data.get("audio_path", "")
+        self.lbl_audio.setText(os.path.basename(self.audio_path) if self.audio_path else "未選択")
+
+        self.start_row = data.get("start_row")
+        self.lbl_start.setText(f"{self.start_row + 1} 行目" if self.start_row is not None else "未設定")
+        self.end_row = data.get("end_row")
+        self.lbl_end.setText(f"{self.end_row + 1} 行目" if self.end_row is not None else "未設定")
+
+        self.col_min = data.get("col_min", -1)
+        self.col_sec = data.get("col_sec", -1)
+        self.lbl_min_col.setText(f"{self.get_col_letter(self.col_min)} 列" if self.col_min >= 0 else "未設定")
+        self.lbl_sec_col.setText(f"{self.get_col_letter(self.col_sec)} 列" if self.col_sec >= 0 else "未設定")
+
+        saved_rc = data.get("row_count_settings", {})
+        self.row_count_settings = {int(k): dict(v) for k, v in saved_rc.items()}
+
+        self.combo_count_pos.blockSignals(True)
+        self.combo_count_pos.setCurrentIndex(data.get("count_layout_mode", 0))
+        self.combo_count_pos.blockSignals(False)
+        offset = data.get("shared_count_offset")
+        if offset:
+            self.shared_count_offset = (offset[0], offset[1])
+        gpos = data.get("global_count_pos")
+        if gpos:
+            self.global_count_item.setPos(gpos[0], gpos[1])
+
+        self.scene.clearSelection()
+        items_to_remove = [item for item in self.scene.items() if isinstance(item, MappedTextItem)]
+        for item in items_to_remove:
+            if item.count_item:
+                self.scene.removeItem(item.count_item)
+            self.scene.removeItem(item)
+
+        for idata in data.get("items", []):
+            item = MappedTextItem(self, idata.get("item_type", "static"), idata.get("static_text", ""))
+            item.setPos(idata.get("x", 0), idata.get("y", 0))
+            item.col_idx = idata.get("col_idx", -1)
+            item.init_mode = idata.get("init_mode", "blackout")
+            item.init_text = idata.get("init_text", "")
+            item.init_row = idata.get("init_row", -1)
+            item.init_col = idata.get("init_col", -1)
+            item.font_size = idata.get("font_size", 60)
+            self.scene.addItem(item)
+            self.scene.addItem(item.count_item)
+
+        if self.start_row is None or self.end_row is None:
+            self.current_step = -1
+        else:
+            self.current_step = min(self.current_step, self.end_row - self.start_row)
+        self.update_preview()
+
+    def update_window_title(self):
+        name = f" - {os.path.basename(self.project_path)}" if self.project_path else ""
+        self.setWindowTitle(f"照明オペレーション エディタ (XML連携版) v{APP_VERSION}{name}")
+
+    def save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(self, "プロジェクトを保存", self.project_path, "Lighting Project (*.ltpj)")
+        if not path: return
+        self._write_project(path)
+
+    def save_project(self):
+        """ 上書き保存 (Ctrl+S)。保存先が未定なら名前を付けて保存 """
+        if self.project_path:
+            self._write_project(self.project_path)
+        else:
+            self.save_project_as()
+
+    def _write_project(self, path):
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-            QMessageBox.information(self, "保存完了", "プロジェクトを保存しました。")
+                json.dump(self.collect_project_data(), f, ensure_ascii=False, indent=4)
+            self.project_path = path
+            self.update_window_title()
+            self.statusBar().showMessage(f"保存しました: {path}", 5000)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
 
@@ -440,67 +548,66 @@ class ExcelToProjectApp(QMainWindow):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
-            excel_path = data.get("excel_path", "")
-            if excel_path and os.path.exists(excel_path):
-                self._load_excel_from_path(excel_path)
-            else:
-                QMessageBox.warning(self, "警告", "保存されていたExcelファイルが見つかりません。必要であれば再度読み込んでください。")
-
-            self.audio_path = data.get("audio_path", "")
-            if self.audio_path:
-                self.lbl_audio.setText(os.path.basename(self.audio_path))
-            else:
-                self.lbl_audio.setText("未選択")
-
-            self.start_row = data.get("start_row")
-            if self.start_row is not None:
-                self.lbl_start.setText(f"{self.start_row + 1} 行目")
-            self.end_row = data.get("end_row")
-            if self.end_row is not None:
-                self.lbl_end.setText(f"{self.end_row + 1} 行目")
-
-            self.col_min = data.get("col_min", -1)
-            self.col_sec = data.get("col_sec", -1)
-            if self.col_min >= 0: self.lbl_min_col.setText(f"{self.get_col_letter(self.col_min)} 列")
-            if self.col_sec >= 0: self.lbl_sec_col.setText(f"{self.get_col_letter(self.col_sec)} 列")
-
-            saved_rc = data.get("row_count_settings", {})
-            self.row_count_settings = {int(k): v for k, v in saved_rc.items()}
-
-            self.combo_count_pos.blockSignals(True)
-            self.combo_count_pos.setCurrentIndex(data.get("count_layout_mode", 0))
-            self.combo_count_pos.blockSignals(False)
-            offset = data.get("shared_count_offset")
-            if offset:
-                self.shared_count_offset = (offset[0], offset[1])
-            gpos = data.get("global_count_pos")
-            if gpos:
-                self.global_count_item.setPos(gpos[0], gpos[1])
-
-            items_to_remove = [item for item in self.scene.items() if isinstance(item, MappedTextItem)]
-            for item in items_to_remove:
-                if item.count_item:
-                    self.scene.removeItem(item.count_item)
-                self.scene.removeItem(item)
-
-            for idata in data.get("items", []):
-                item = MappedTextItem(self, idata.get("item_type", "static"), idata.get("static_text", ""))
-                item.setPos(idata.get("x", 0), idata.get("y", 0))
-                item.col_idx = idata.get("col_idx", -1)
-                item.init_mode = idata.get("init_mode", "blackout")
-                item.init_text = idata.get("init_text", "")
-                item.init_row = idata.get("init_row", -1)
-                item.init_col = idata.get("init_col", -1)
-                item.font_size = idata.get("font_size", 60)
-                self.scene.addItem(item)
-                self.scene.addItem(item.count_item)
-
+            self.apply_project_data(data)
             self.current_step = -1
             self.update_preview()
-
+            self.project_path = path
+            self.update_window_title()
+            self.reset_undo_history()
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"プロジェクトの読み込みに失敗しました:\n{e}")
+
+    # --- Undo / Redo (編集状態のスナップショット方式) ---
+    def _snapshot(self):
+        # JSONを経由して、比較・保持しやすい純粋なデータにする
+        return json.loads(json.dumps(self.collect_project_data()))
+
+    def reset_undo_history(self):
+        self.undo_timer.stop()
+        self.undo_stack = [self._snapshot()]
+        self.redo_stack = []
+
+    def schedule_record(self):
+        """ 入力欄などの連続した変更をまとめて履歴に積む """
+        self.undo_timer.start()
+
+    def record_state(self):
+        self.undo_timer.stop()
+        if self.restoring:
+            return
+        snap = self._snapshot()
+        if self.undo_stack and snap == self.undo_stack[-1]:
+            return
+        self.undo_stack.append(snap)
+        self.redo_stack = []
+        if len(self.undo_stack) > UNDO_LIMIT:
+            self.undo_stack.pop(0)
+
+    def _restore(self, snap):
+        self.restoring = True
+        try:
+            self.apply_project_data(snap, reload_excel=False)
+        finally:
+            self.restoring = False
+
+    def undo(self):
+        if self.undo_timer.isActive():
+            self.record_state()
+        if len(self.undo_stack) < 2:
+            return
+        self.redo_stack.append(self.undo_stack.pop())
+        self._restore(self.undo_stack[-1])
+        self.statusBar().showMessage("元に戻しました", 2000)
+
+    def redo(self):
+        if self.undo_timer.isActive():
+            self.record_state()
+        if not self.redo_stack:
+            return
+        snap = self.redo_stack.pop()
+        self.undo_stack.append(snap)
+        self._restore(snap)
+        self.statusBar().showMessage("やり直しました", 2000)
 
     def start_tutorial(self):
         self.overlay = TutorialOverlay(self)
@@ -1212,6 +1319,29 @@ class ExcelToProjectApp(QMainWindow):
         QMessageBox.information(self, "完了", f"【出力完了】\n・画像 {total_pngs}枚（ベース画像＋汎用カウント画像）\n・プロジェクトファイル ({xml_filename})\n\n※指定した素材ファイルも同じフォルダにコピーしました。")
         import subprocess
         subprocess.Popen(f'explorer "{os.path.abspath(out_dir)}"')
+
+# ---------------------------------------------------------
+# Undo/Redo用: 編集操作の後に履歴を記録するようメソッドを包む
+# ---------------------------------------------------------
+def _record_after(name, mode):
+    orig = getattr(ExcelToProjectApp, name)
+    def inner(self, *args, **kwargs):
+        # Qtのシグナルは値を渡してくるので、元のメソッドが受け取れる数だけ渡す
+        result = orig(self, *args[:orig.__code__.co_argcount - 1], **kwargs)
+        if mode == "now": self.record_state()
+        elif mode == "later": self.schedule_record()
+        elif mode == "reset": self.reset_undo_history()
+        return result
+    inner.__name__ = name
+    setattr(ExcelToProjectApp, name, inner)
+
+for _name in ("set_min_col", "set_sec_col", "clear_col", "set_item_ref_col", "set_item_init_cell",
+              "set_start_row", "set_end_row", "add_new_text_item", "delete_selected_text_item",
+              "copy_prev_row_settings", "select_audio"):
+    _record_after(_name, "now")
+for _name in ("apply_properties_to_item", "save_row_count_settings"):
+    _record_after(_name, "later")
+_record_after("action_load_excel", "reset")
 
 if __name__ == "__main__":
     def global_exception_handler(exctype, value, tb):

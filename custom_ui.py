@@ -212,6 +212,15 @@ def hide_snap_guides(scene):
     for line in getattr(scene, "_snap_guides", None) or []:
         line.hide()
 
+def finish_drag(scene):
+    """ ドラッグ終了時: ガイド線を消し、編集履歴(Undo用)に記録する """
+    if scene is None:
+        return
+    hide_snap_guides(scene)
+    record = getattr(scene, "_record_state", None)
+    if record:
+        record()
+
 def snap_anchor(moving, anchor):
     """ 移動中アイテムの基準点(anchor)を、キャンバス中央や他アイテムの中心に吸着させた座標を返す。
         吸着した位置にはガイド線を表示する """
@@ -264,7 +273,7 @@ class SnapTextItem(QGraphicsTextItem):
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
-        hide_snap_guides(self.scene())
+        finish_drag(self.scene())
 
 class CountTextItem(SnapTextItem):
     def __init__(self, main_app, target_item):
@@ -334,7 +343,15 @@ class MappedTextItem(QGraphicsItemGroup):
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
-        hide_snap_guides(self.scene())
+        finish_drag(self.scene())
+
+    def boundingRect(self):
+        # QGraphicsItemGroupの標準の範囲は、文字が入る前の状態のまま更新されず、範囲選択に引っかからないため自前で返す
+        r = self.selection_rect.rect()
+        return r if not r.isNull() else QRectF(-50, -20, 100, 40)
+
+    def paint(self, painter, option, widget=None):
+        pass  # 描画は子アイテムが行う (標準の選択枠は使わない)
 
     def update_content(self, mode, color_map, text1="", text2="", count_mode="none"):
         self.selection_rect.hide()
@@ -374,6 +391,7 @@ class MappedTextItem(QGraphicsItemGroup):
             rect = QRectF(-50, -20, 100, 40)
             
         rect.adjust(-15, -15, 15, 15)
+        self.prepareGeometryChange()
         self.selection_rect.setRect(rect)
         
         if self.isSelected():
@@ -383,6 +401,8 @@ class PreviewView(QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
         self.setBackgroundBrush(QColor("#242424"))
+        # 何もない場所をドラッグして範囲選択できるようにする
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
